@@ -111,6 +111,40 @@ describe("resolveIdentity", () => {
 
     await expect(resolveIdentity()).resolves.toBeNull();
   });
+
+  it("re-resolves when the embedded server identity changes", async () => {
+    const host = await import("./host");
+    host.setOmnigentHostConfig({ serverIdentity: "workspace-a", fetcher: fetchMock });
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ user_id: "alice" }));
+    const identity = await import("./identity");
+    expect(await identity.resolveIdentity()).toBe("alice");
+
+    host.setOmnigentHostConfig({ serverIdentity: "workspace-b", fetcher: fetchMock });
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ user_id: "bob" }));
+    expect(await identity.resolveIdentity()).toBe("bob");
+    expect(identity.getCurrentUserId()).toBe("bob");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a stale server response overwrite the new server identity", async () => {
+    let resolveA!: (response: Response) => void;
+    let resolveB!: (response: Response) => void;
+    fetchMock
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveA = resolve; }))
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveB = resolve; }));
+    const host = await import("./host");
+    host.setOmnigentHostConfig({ serverIdentity: "workspace-a", fetcher: fetchMock });
+    const identity = await import("./identity");
+    const requestA = identity.resolveIdentity();
+    host.setOmnigentHostConfig({ serverIdentity: "workspace-b", fetcher: fetchMock });
+    const requestB = identity.resolveIdentity();
+
+    resolveB(mockJsonResponse({ user_id: "bob" }));
+    expect(await requestB).toBe("bob");
+    resolveA(mockJsonResponse({ user_id: "alice" }));
+    expect(await requestA).toBe("bob");
+    expect(identity.getCurrentUserId()).toBe("bob");
+  });
 });
 
 describe("getCurrentUserId", () => {

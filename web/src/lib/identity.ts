@@ -16,7 +16,12 @@
  */
 
 import { getCachedServerInfo } from "./capabilities";
-import { getOmnigentHostConfig, hostFetch, isDatabricksWorkspace } from "./host";
+import {
+  getOmnigentHostConfig,
+  getOmnigentServerIdentity,
+  hostFetch,
+  isDatabricksWorkspace,
+} from "./host";
 import {
   clearHostKeyless,
   getSessionHost,
@@ -252,6 +257,30 @@ let identityPromise: Promise<string | null> | null = null;
 // Hardcoding "/login" here previously sent OIDC users to an accounts
 // password form that had no connection to their IdP.
 let serverLoginUrl: string | null = null;
+let identityScopeKey: unknown = undefined;
+
+function currentIdentityScopeKey(): unknown {
+  const serverIdentity = getOmnigentServerIdentity();
+  if (serverIdentity !== null) return `server:${serverIdentity}`;
+  return getOmnigentHostConfig().fetcher ?? null;
+}
+
+function syncIdentityScope(): unknown {
+  const scope = currentIdentityScopeKey();
+  if (identityScopeKey !== scope) {
+    identityScopeKey = scope;
+    currentUserId = null;
+    currentIsAdmin = false;
+    identityResolved = false;
+    identityPromise = null;
+    serverLoginUrl = null;
+  }
+  return scope;
+}
+
+function identityScopeIsCurrent(scope: unknown): boolean {
+  return currentIdentityScopeKey() === scope;
+}
 // Set the moment we hand the browser to the login page. Assigning
 // `location.href` starts a navigation but does NOT stop this document:
 // requests already in flight keep landing, and every 401 among them used
@@ -313,21 +342,17 @@ function isOnLoginPath(): boolean {
  * redirects the browser to the login page.
  */
 export async function resolveIdentity(): Promise<string | null> {
+  const scope = syncIdentityScope();
   if (identityResolved) return currentUserId;
   if (identityPromise) return identityPromise;
   identityPromise = (async () => {
     try {
       const res = await hostFetch("/v1/me");
+      if (!identityScopeIsCurrent(scope)) return resolveIdentity();
       if (res.status === 401) {
-        // OIDC / accounts mode: server requires authentication.
-        // Redirect to the login URL provided in the response body —
-        // unless we're already there (avoid an infinite reload loop
-        // when the LoginPage itself calls resolveIdentity).
         try {
-          const data = (await res.json()) as {
-            user_id: null;
-            login_url?: string;
-          };
+          const data = (await res.json()) as { user_id: null; login_url?: string };
+          if (!identityScopeIsCurrent(scope)) return resolveIdentity();
           if (data.login_url) {
             serverLoginUrl = data.login_url;
             if (!isOnLoginPath()) {
@@ -340,16 +365,15 @@ export async function resolveIdentity(): Promise<string | null> {
         }
       }
       if (res.ok) {
-        const data = (await res.json()) as {
-          user_id: string | null;
-          is_admin?: boolean;
-        };
+        const data = (await res.json()) as { user_id: string | null; is_admin?: boolean };
+        if (!identityScopeIsCurrent(scope)) return resolveIdentity();
         currentUserId = data.user_id;
         currentIsAdmin = data.is_admin ?? false;
       }
     } catch {
       // Server unreachable — leave as null.
     }
+    if (!identityScopeIsCurrent(scope)) return resolveIdentity();
     identityResolved = true;
     return currentUserId;
   })();
