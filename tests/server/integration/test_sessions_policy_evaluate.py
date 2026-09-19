@@ -823,9 +823,7 @@ async def test_tool_call_ask_returns_deny_on_decline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A declined TOOL_CALL ASK collapses to ``POLICY_ACTION_DENY`` —
-    fail-closed. If the human refuses at the approve URL, the native
-    tool must not run.
+    A declined TOOL_CALL ASK returns the resolver's rationale to the harness.
     """
     _patch_default_policies(monkeypatch, f"{__name__}._ask_for_bash")
     agent = await create_test_agent(client)
@@ -843,13 +841,55 @@ async def test_tool_call_ask_returns_deny_on_decline(
     elicitation_id = await drain
     verdict = await client.post(
         f"/v1/sessions/{session_id}/elicitations/{elicitation_id}/resolve",
-        json={"action": "decline"},
+        json={
+            "action": "decline",
+            "reason": "Do not run this in production; use the read-only command.",
+        },
     )
     assert verdict.status_code == 202, verdict.text
 
     resp = await evaluate
     assert resp.status_code == 200, resp.text
-    assert resp.json()["result"] == "POLICY_ACTION_DENY"
+    assert resp.json() == {
+        "result": "POLICY_ACTION_DENY",
+        "reason": "Do not run this in production; use the read-only command.",
+    }
+
+
+async def test_tool_call_ask_returns_cancel_rationale_on_deny(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled ASK preserves guidance without taking the decline interrupt path."""
+    _patch_default_policies(monkeypatch, f"{__name__}._ask_for_bash")
+    agent = await create_test_agent(client)
+    session_id = await _create_session(client, agent["id"])
+
+    drain = asyncio.create_task(_drain_elicitation_id(session_id))
+    await asyncio.sleep(0.05)
+    evaluate = asyncio.create_task(
+        client.post(
+            f"/v1/sessions/{session_id}/policies/evaluate",
+            json=_tool_call_request("Bash"),
+        )
+    )
+
+    elicitation_id = await drain
+    verdict = await client.post(
+        f"/v1/sessions/{session_id}/elicitations/{elicitation_id}/resolve",
+        json={
+            "action": "cancel",
+            "reason": "Need a narrower request before approving this tool call.",
+        },
+    )
+    assert verdict.status_code == 202, verdict.text
+
+    resp = await evaluate
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "result": "POLICY_ACTION_DENY",
+        "reason": "Need a narrower request before approving this tool call.",
+    }
 
 
 async def test_tool_call_ask_forwards_popup_event_to_runner(
