@@ -945,7 +945,7 @@ def register_hooks_routes(
                         Phase.REQUEST,
                     ):
                         try:
-                            approved = await _hold_native_ask_gate(
+                            gate_decision = await _hold_native_ask_gate(
                                 request,
                                 session_id=session_id,
                                 phase=phase,
@@ -955,6 +955,8 @@ def register_hooks_routes(
                                 conversation_store=conversation_store,
                                 elicitation_id=hook_elicitation_id,
                             )
+                            approved = bool(gate_decision)
+                            resolver_reason = getattr(gate_decision, "reason", None)
                         except ElicitationDeclinedError as exc:
                             # Explicit user decline: interrupt the native
                             # harness BEFORE returning the hook deny so the
@@ -987,7 +989,9 @@ def register_hooks_routes(
                             if approved
                             else {
                                 "result": "POLICY_ACTION_DENY",
-                                "reason": result.reason or "Approval was not granted.",
+                                "reason": resolver_reason
+                                or result.reason
+                                or "Approval was not granted.",
                             }
                         )
                         add_audit_attrs(
