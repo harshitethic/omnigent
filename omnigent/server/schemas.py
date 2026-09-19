@@ -1205,7 +1205,10 @@ class ElicitationResult(BaseModel):
     """
     Consumer reply to an outstanding elicitation.
 
-    Field names + semantics mirror MCP's ``ElicitResult`` verbatim.
+    The ``action``, ``content``, and ``_meta`` fields mirror MCP's
+    ``ElicitResult``. ``reason`` is an additive Omnigent extension for
+    resolver-supplied refusal guidance and deliberately does not widen MCP's
+    accept-only ``content`` semantics.
     Omnigent clients deliver this shape inside the session-scoped
     ``approval`` event body, alongside the ``elicitation_id``
     correlation key.
@@ -1220,6 +1223,8 @@ class ElicitationResult(BaseModel):
         binary approve/reject elicitations and for ``decline`` /
         ``cancel`` actions. Values are restricted to JSON scalars
         and string lists per the MCP spec.
+    :param reason: Optional resolver-supplied rationale for a ``decline`` or
+        ``cancel``. Distinct from the policy reason that caused the ASK.
     :param meta: Optional MCP result metadata. Codex uses
         ``_meta.persist`` to distinguish one-time, session-scoped,
         and persistent MCP tool approvals.
@@ -1230,6 +1235,7 @@ class ElicitationResult(BaseModel):
     # ElicitResult.content value type — keep them aligned so an MCP
     # client can bridge to our endpoint without translation.
     content: dict[str, str | int | float | bool | list[str] | None] | None = None
+    reason: str | None = None
     meta: dict[str, Any] | None = Field(default=None, alias="_meta")
 
     # ``_meta`` must serialize under its alias so the verdict survives the
