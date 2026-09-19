@@ -17,6 +17,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import httpx
@@ -2157,7 +2158,18 @@ def _spawn_native_blocked_notice_forward(
     task.add_done_callback(_native_popup_forward_tasks.discard)
 
 
-async def _hold_native_ask_gate(*args: Any, **kwargs: Any) -> bool:
+@dataclass(frozen=True)
+class _AskGateDecision:
+    """Collapsed ASK verdict plus optional resolver-supplied rationale."""
+
+    approved: bool
+    reason: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.approved
+
+
+async def _hold_native_ask_gate(*args: Any, **kwargs: Any) -> _AskGateDecision | bool:
     """Call-time proxy so a facade patch of this symbol is honored here."""
     from omnigent.server.routes import sessions as _facade
 
@@ -2174,7 +2186,7 @@ async def _hold_native_ask_gate_impl(
     result: PolicyResult,
     conversation_store: ConversationStore,
     elicitation_id: str | None = None,
-) -> bool:
+) -> _AskGateDecision:
     """
     Hold a server-side ASK gate until a human resolves it.
 
@@ -2223,8 +2235,8 @@ async def _hold_native_ask_gate_impl(
         used by ``POST /policies/evaluate`` retries so a hook retry after
         a transient 5xx / connect-drop does not prompt the human twice.
         ``None`` mints a fresh id (the default for non-retry callers).
-    :returns: ``True`` iff a human accepted; ``False`` on cancel /
-        timeout / disconnect (fail closed).
+    :returns: Collapsed approval state plus any resolver-supplied rationale.
+        Timeout / disconnect fail closed with no resolver rationale.
     :raises ElicitationDeclinedError: when the human explicitly
         declines (``action == "decline"``). Callers should abort the
         turn rather than continuing with a DENY.
@@ -2263,7 +2275,7 @@ async def _hold_native_ask_gate_impl(
     # than feeding a DENY message to the LLM and letting it continue.
     if verdict is not None and verdict.action == "decline":
         raise ElicitationDeclinedError(
-            result.reason or "",
+            verdict.reason or result.reason or "",
             policy_name=result.deciding_policy,
         )
     approved = verdict is not None and verdict.action == "accept"
@@ -2275,7 +2287,10 @@ async def _hold_native_ask_gate_impl(
         if result.state_updates:
             with contextlib.suppress(ConversationNotFoundError):
                 engine.apply_state_updates(result.state_updates)
-    return approved
+    return _AskGateDecision(
+        approved=approved,
+        reason=verdict.reason if verdict is not None and not approved else None,
+    )
 
 
 async def _persist_external_antigravity_subagent_start(
