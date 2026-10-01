@@ -14,6 +14,7 @@ import omnigent.onboarding.opencode_auth as oc
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point XDG_DATA_HOME at a tmp dir and clear provider env keys."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     for _provider_id, _label, var in oc._ENV_PROVIDER_VARS:
         monkeypatch.delenv(var, raising=False)
 
@@ -26,6 +27,39 @@ def _write_auth(tmp_path: Path, providers: dict[str, object]) -> None:
 
 def test_auth_path_honors_xdg_data_home(tmp_path: Path) -> None:
     assert oc.opencode_auth_path() == tmp_path / "share" / "opencode" / "auth.json"
+
+
+def test_config_path_honors_xdg_config_home(tmp_path: Path) -> None:
+    assert oc.opencode_config_path() == tmp_path / "config" / "opencode" / "opencode.json"
+
+
+def test_configured_providers_reads_enabled_providers(tmp_path: Path) -> None:
+    path = oc.opencode_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"enabled_providers": ["amazon-bedrock", "openai"]}),
+        encoding="utf-8",
+    )
+    assert oc._configured_providers() == ("amazon-bedrock", "openai")
+    assert "amazon-bedrock" in oc.reachable_provider_ids()
+
+
+def test_bedrock_config_marks_installed_opencode_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(oc, "harness_cli_installed", lambda _key: True)
+    path = oc.opencode_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"enabled_providers": ["amazon-bedrock"]}),
+        encoding="utf-8",
+    )
+
+    summary = oc.opencode_auth_summary()
+
+    assert summary.ready is True
+    assert summary.configured_providers == ("amazon-bedrock",)
+    assert "config: amazon-bedrock" in summary.describe()
 
 
 def test_stored_providers_reads_auth_json_keys(tmp_path: Path) -> None:
