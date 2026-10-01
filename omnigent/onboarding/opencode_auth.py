@@ -41,6 +41,13 @@ _ENV_PROVIDER_VARS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def opencode_config_path() -> Path:
+    """Return OpenCode\'s user config path for this process\'s HOME."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "opencode" / "opencode.json"
+
+
 def opencode_auth_path() -> Path:
     """Return OpenCode's ``auth.json`` path for this process's HOME.
 
@@ -69,6 +76,30 @@ def _stored_providers() -> tuple[str, ...]:
     return tuple(str(k) for k, v in data.items() if bool(v))
 
 
+def _configured_providers() -> tuple[str, ...]:
+    """Return provider ids explicitly enabled in OpenCode\'s user config.
+
+    OpenCode providers such as amazon-bedrock may authenticate through their
+    SDK\'s ambient credential chain instead of auth.json or an API-key
+    environment variable. An explicit enabled_providers entry therefore
+    counts as configured for readiness reporting.
+    """
+    try:
+        data = json.loads(opencode_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    providers = data.get("enabled_providers")
+    if not isinstance(providers, list):
+        return ()
+    return tuple(
+        provider.strip()
+        for provider in providers
+        if isinstance(provider, str) and provider.strip()
+    )
+
+
 def _env_providers(environ: dict[str, str] | None = None) -> tuple[str, ...]:
     """Return provider labels whose API-key env var is present."""
     env = os.environ if environ is None else environ
@@ -87,6 +118,7 @@ def reachable_provider_ids(environ: dict[str, str] | None = None) -> frozenset[s
     """
     env = os.environ if environ is None else environ
     ids = set(_stored_providers())
+    ids.update(_configured_providers())
     for provider_id, _label, var in _ENV_PROVIDER_VARS:
         if env.get(var, "").strip():
             ids.add(provider_id)
@@ -105,11 +137,12 @@ class OpenCodeAuthSummary:
     installed: bool
     stored_providers: tuple[str, ...]
     env_providers: tuple[str, ...]
+    configured_providers: tuple[str, ...] = ()
 
     @property
     def has_provider(self) -> bool:
-        """Whether any provider is reachable (stored credential or env key)."""
-        return bool(self.stored_providers or self.env_providers)
+        """Whether any provider is reachable or explicitly configured."""
+        return bool(self.stored_providers or self.env_providers or self.configured_providers)
 
     @property
     def ready(self) -> bool:
@@ -127,6 +160,8 @@ class OpenCodeAuthSummary:
             )
         if self.env_providers:
             parts.append(f"env: {', '.join(self.env_providers)}")
+        if self.configured_providers:
+            parts.append(f"config: {', '.join(sorted(self.configured_providers))}")
         return " · ".join(parts) if parts else "no provider configured yet"
 
 
@@ -136,4 +171,5 @@ def opencode_auth_summary() -> OpenCodeAuthSummary:
         installed=harness_cli_installed(OPENCODE_KEY),
         stored_providers=_stored_providers(),
         env_providers=_env_providers(),
+        configured_providers=_configured_providers(),
     )
